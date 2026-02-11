@@ -108,10 +108,10 @@ open class OpenVPNTunnelProvider: NEPacketTunnelProvider {
 
     private lazy var defaults = UserDefaults(suiteName: appGroup)
     
-    private var cfg: OpenVPNProvider.Configuration!
-    
-    private var strategy: ConnectionStrategy!
-    
+    private var cfg: OpenVPNProvider.Configuration?
+
+    private var strategy: ConnectionStrategy?
+
     // MARK: Internal state
 
     private var session: OpenVPNSession?
@@ -160,11 +160,13 @@ open class OpenVPNTunnelProvider: NEPacketTunnelProvider {
             
             // inject serverAddress into sessionConfiguration.hostname
             if !serverAddress.isEmpty {
-                var sessionBuilder = cfg.sessionConfiguration.builder()
-                sessionBuilder.hostname = serverAddress
-                var cfgBuilder = cfg.builder()
-                cfgBuilder.sessionConfiguration = sessionBuilder.build()
-                cfg = cfgBuilder.build()
+                var sessionBuilder = cfg?.sessionConfiguration.builder()
+                sessionBuilder?.hostname = serverAddress
+                var cfgBuilder = cfg?.builder()
+                if let sessionConfiguration = sessionBuilder?.build() {
+                    cfgBuilder?.sessionConfiguration = sessionConfiguration
+                    cfg = cfgBuilder?.build()
+                }
             }
         } catch let e {
             var message: String?
@@ -183,10 +185,10 @@ open class OpenVPNTunnelProvider: NEPacketTunnelProvider {
         }
 
         // override library configuration
-        if let masksPrivateData = cfg.masksPrivateData {
+        if let masksPrivateData = cfg?.masksPrivateData {
             CoreConfiguration.masksPrivateData = masksPrivateData
         }
-        if let versionIdentifier = cfg.versionIdentifier {
+        if let versionIdentifier = cfg?.versionIdentifier {
             CoreConfiguration.versionIdentifier = versionIdentifier
         }
 
@@ -203,29 +205,34 @@ open class OpenVPNTunnelProvider: NEPacketTunnelProvider {
         }
 
         log.info("Starting tunnel...")
-        cfg.clearLastError(in: appGroup)
-        
+        cfg?.clearLastError(in: appGroup)
+
         guard OpenVPN.prepareRandomNumberGenerator(seedLength: prngSeedLength) else {
             completionHandler(OpenVPNProviderConfigurationError.prngInitialization)
             return
         }
 
-        cfg.print(appVersion: appVersion)
+        cfg?.print(appVersion: appVersion)
 
         // prepare to pick endpoints
-        strategy = ConnectionStrategy(configuration: cfg)
+        if let cfg {
+            strategy = ConnectionStrategy(configuration: cfg)
+        }
 
         let session: OpenVPNSession
         do {
-            session = try OpenVPNSession(queue: tunnelQueue, configuration: cfg.sessionConfiguration, cachesURL: cachesURL)
-            refreshDataCount()
+            if let cfg {
+                session = try OpenVPNSession(queue: tunnelQueue, configuration: cfg.sessionConfiguration, cachesURL: cachesURL)
+                refreshDataCount()
+
+                session.credentials = credentials
+                session.delegate = self
+                self.session = session
+            }
         } catch let e {
             completionHandler(e)
             return
         }
-        session.credentials = credentials
-        session.delegate = self
-        self.session = session
 
         logCurrentSSID()
 
@@ -238,7 +245,7 @@ open class OpenVPNTunnelProvider: NEPacketTunnelProvider {
     open override func stopTunnel(with reason: NEProviderStopReason, completionHandler: @escaping () -> Void) {
         pendingStartHandler = nil
         log.info("Stopping tunnel...")
-        cfg.clearLastError(in: appGroup)
+        cfg?.clearLastError(in: appGroup)
 
         guard let session = session else {
             completionHandler()
@@ -312,7 +319,7 @@ open class OpenVPNTunnelProvider: NEPacketTunnelProvider {
             return
         }
 
-        strategy.createSocket(from: self, timeout: dnsTimeout, queue: tunnelQueue) { (socket, error) in
+        strategy?.createSocket(from: self, timeout: dnsTimeout, queue: tunnelQueue) { (socket, error) in
             guard let socket = socket else {
                 self.disposeTunnel(error: error)
                 return
@@ -323,7 +330,7 @@ open class OpenVPNTunnelProvider: NEPacketTunnelProvider {
     
     private func connectTunnel(via socket: GenericSocket) {
         log.info("Will connect to \(socket)")
-        cfg.clearLastError(in: appGroup)
+        cfg?.clearLastError(in: appGroup)
 
         log.debug("Socket type is \(type(of: socket))")
         self.socket = socket
@@ -424,10 +431,10 @@ extension OpenVPNTunnelProvider: GenericSocketDelegate {
             return
         }
         if session.canRebindLink() {
-            session.rebindLink(producer.link(xorMask: cfg.sessionConfiguration.xorMask))
+            session.rebindLink(producer.link(xorMask: cfg?.sessionConfiguration.xorMask))
             reasserting = false
         } else {
-            session.setLink(producer.link(xorMask: cfg.sessionConfiguration.xorMask))
+            session.setLink(producer.link(xorMask: cfg?.sessionConfiguration.xorMask))
         }
     }
     
@@ -653,7 +660,7 @@ extension OpenVPNTunnelProvider: OpenVPNSessionDelegate {
         
         var dnsServers: [String] = []
         var dnsSettings: NEDNSSettings?
-        if #available(iOS 14, macOS 11, *) {
+        if #available(iOS 14, macOS 11, *), let cfg {
             switch cfg.sessionConfiguration.dnsProtocol {
             case .https:
                 dnsServers = cfg.sessionConfiguration.dnsServers ?? []
@@ -688,7 +695,7 @@ extension OpenVPNTunnelProvider: OpenVPNSessionDelegate {
         // fall back
         if dnsSettings == nil {
             dnsServers = []
-            if let servers = cfg.sessionConfiguration.dnsServers,
+            if let servers = cfg?.sessionConfiguration.dnsServers,
                !servers.isEmpty {
                 dnsServers = servers
             } else if let servers = options.dnsServers {
@@ -709,7 +716,7 @@ extension OpenVPNTunnelProvider: OpenVPNSessionDelegate {
             dnsSettings?.matchDomains = [""]
         }
         
-        if let searchDomains = cfg.sessionConfiguration.searchDomains ?? options.searchDomains {
+        if let searchDomains = cfg?.sessionConfiguration.searchDomains ?? options.searchDomains {
             log.info("DNS: Using search domains \(searchDomains.maskedDescription)")
             dnsSettings?.domainName = searchDomains.first
             dnsSettings?.searchDomains = searchDomains
@@ -730,13 +737,13 @@ extension OpenVPNTunnelProvider: OpenVPNSessionDelegate {
         }
         
         var proxySettings: NEProxySettings?
-        if let httpsProxy = cfg.sessionConfiguration.httpsProxy ?? options.httpsProxy {
+        if let httpsProxy = cfg?.sessionConfiguration.httpsProxy ?? options.httpsProxy {
             proxySettings = NEProxySettings()
             proxySettings?.httpsServer = httpsProxy.neProxy()
             proxySettings?.httpsEnabled = true
             log.info("Routing: Setting HTTPS proxy \(httpsProxy.address.maskedDescription):\(httpsProxy.port)")
         }
-        if let httpProxy = cfg.sessionConfiguration.httpProxy ?? options.httpProxy {
+        if let httpProxy = cfg?.sessionConfiguration.httpProxy ?? options.httpProxy {
             if proxySettings == nil {
                 proxySettings = NEProxySettings()
             }
@@ -744,7 +751,7 @@ extension OpenVPNTunnelProvider: OpenVPNSessionDelegate {
             proxySettings?.httpEnabled = true
             log.info("Routing: Setting HTTP proxy \(httpProxy.address.maskedDescription):\(httpProxy.port)")
         }
-        if let pacURL = cfg.sessionConfiguration.proxyAutoConfigurationURL ?? options.proxyAutoConfigurationURL {
+        if let pacURL = cfg?.sessionConfiguration.proxyAutoConfigurationURL ?? options.proxyAutoConfigurationURL {
             if proxySettings == nil {
                 proxySettings = NEProxySettings()
             }
@@ -754,7 +761,7 @@ extension OpenVPNTunnelProvider: OpenVPNSessionDelegate {
         }
 
         // only set if there is a proxy (proxySettings set to non-nil above)
-        if let bypass = cfg.sessionConfiguration.proxyBypassDomains ?? options.proxyBypassDomains {
+        if let bypass = cfg?.sessionConfiguration.proxyBypassDomains ?? options.proxyBypassDomains {
             proxySettings?.exceptionList = bypass
             log.info("Routing: Setting proxy by-pass list: \(bypass.maskedDescription)")
         }
@@ -801,7 +808,7 @@ extension OpenVPNTunnelProvider: OpenVPNSessionDelegate {
         newSettings.ipv6Settings = ipv6Settings
         newSettings.dnsSettings = dnsSettings
         newSettings.proxySettings = proxySettings
-        if let mtu = cfg.sessionConfiguration.mtu {
+        if let mtu = cfg?.sessionConfiguration.mtu {
             newSettings.mtu = NSNumber(value: mtu)
         }
       
@@ -811,7 +818,7 @@ extension OpenVPNTunnelProvider: OpenVPNSessionDelegate {
 
 extension OpenVPNTunnelProvider {
     private func tryNextEndpoint() -> Bool {
-        guard strategy.tryNextEndpoint() else {
+        guard let strategy, strategy.tryNextEndpoint() else {
             disposeTunnel(error: OpenVPNProviderError.exhaustedProtocols)
             return false
         }
